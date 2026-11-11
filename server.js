@@ -116,14 +116,17 @@ wss.on('connection', (ws) => {
           if (!room) return;
 
           for (const client of room.peers) {
-            if (client.peerId === targetPeerId && client.ws.readyState === WebSocket.OPEN) {
-              client.ws.send(JSON.stringify({
-                type: 'signal',
-                fromPeerId: currentPeerId,
-                fromUserName: currentUserName,
-                signalData
-              }));
-              break;
+            // Forward to target peer, OR forward to all other peers if targetPeerId is not specified
+            if (client.ws !== ws && client.ws.readyState === WebSocket.OPEN) {
+              if (!targetPeerId || client.peerId === targetPeerId) {
+                client.ws.send(JSON.stringify({
+                  type: 'signal',
+                  fromPeerId: currentPeerId,
+                  fromUserName: currentUserName,
+                  signalData
+                }));
+                if (targetPeerId) break;
+              }
             }
           }
           break;
