@@ -1,0 +1,13 @@
+{
+  "name": "stream-sync-signaling-server",
+  "version": "1.0.0",
+  "description": "Signaling and coordination server for StreamSync Watch Party Chrome Extension",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "tunnel": "npx cloudflared tunnel --url http://localhost:3000"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
