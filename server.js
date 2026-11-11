@@ -19,7 +19,7 @@ const server = http.createServer((req, res) => {
     res.writeHead(200);
     const roomCount = rooms.size;
     let peerCount = 0;
-    rooms.forEach(set => peerCount += set.size);
+    rooms.forEach(r => peerCount += r.peers.size);
     res.end(JSON.stringify({
       status: 'online',
       service: 'StreamSync Signaling Server',
@@ -36,7 +36,7 @@ const server = http.createServer((req, res) => {
 // WebSocket server attached to HTTP server
 const wss = new WebSocketServer({ server });
 
-// Map: roomId => Set of { ws, peerId, userName }
+// Map: roomId => { currentUrl: string | null, peers: Set of { ws, peerId, userName } }
 const rooms = new Map();
 
 function broadcastToRoom(roomId, senderWs, payload) {
@@ -44,7 +44,7 @@ function broadcastToRoom(roomId, senderWs, payload) {
   if (!room) return;
 
   const data = JSON.stringify(payload);
-  for (const client of room) {
+  for (const client of room.peers) {
     if (client.ws !== senderWs && client.ws.readyState === WebSocket.OPEN) {
       client.ws.send(data);
     }
@@ -59,7 +59,7 @@ wss.on('connection', (ws) => {
   ws.on('message', (messageRaw) => {
     try {
       const msg = JSON.parse(messageRaw);
-      const { type, roomId, peerId, userName, data } = msg;
+      const { type, roomId, peerId, userName, data, videoUrl } = msg;
 
       switch (type) {
         case 'join-room': {
@@ -68,26 +68,35 @@ wss.on('connection', (ws) => {
           currentUserName = userName || 'Friend';
 
           if (!rooms.has(roomId)) {
-            rooms.set(roomId, new Set());
+            rooms.set(roomId, {
+              currentUrl: videoUrl || null,
+              peers: new Set()
+            });
           }
 
           const room = rooms.get(roomId);
 
+          // If a video URL is provided by the room host, store it
+          if (videoUrl && (!room.currentUrl || room.peers.size === 0)) {
+            room.currentUrl = videoUrl;
+          }
+
           // Get existing peers in the room before adding the new one
-          const existingPeers = Array.from(room).map(p => ({
+          const existingPeers = Array.from(room.peers).map(p => ({
             peerId: p.peerId,
             userName: p.userName
           }));
 
           // Add this client
-          room.add({ ws, peerId, userName: currentUserName });
-          console.log(`[JOIN] ${currentUserName} (${peerId}) joined room: ${roomId}. Total peers in room: ${room.size}`);
+          room.peers.add({ ws, peerId, userName: currentUserName });
+          console.log(`[JOIN] ${currentUserName} (${peerId}) joined room: ${roomId}. Current URL: ${room.currentUrl}. Total: ${room.peers.size}`);
 
-          // Acknowledge back to joining peer with existing peers list
+          // Acknowledge back to joining peer with existing peers and room's current video URL
           ws.send(JSON.stringify({
             type: 'room-joined',
             roomId,
             peerId,
+            currentUrl: room.currentUrl,
             existingPeers
           }));
 
@@ -106,7 +115,7 @@ wss.on('connection', (ws) => {
           const room = rooms.get(currentRoomId);
           if (!room) return;
 
-          for (const client of room) {
+          for (const client of room.peers) {
             if (client.peerId === targetPeerId && client.ws.readyState === WebSocket.OPEN) {
               client.ws.send(JSON.stringify({
                 type: 'signal',
@@ -122,7 +131,15 @@ wss.on('connection', (ws) => {
 
         case 'broadcast': {
           // General room-wide broadcast (fallback for chat / sync if DataChannel isn't ready)
-          if (currentRoomId) {
+          if (currentRoomId && rooms.has(currentRoomId)) {
+            const room = rooms.get(currentRoomId);
+
+            // If this is a NAVIGATE broadcast, keep server's currentUrl in sync
+            if (data && data.type === 'SYNC' && data.data && data.data.action === 'NAVIGATE' && data.data.url) {
+              room.currentUrl = data.data.url;
+              console.log(`[NAVIGATE] Room ${currentRoomId} URL updated to: ${room.currentUrl}`);
+            }
+
             broadcastToRoom(currentRoomId, ws, {
               type: 'broadcast',
               fromPeerId: currentPeerId,
@@ -144,15 +161,15 @@ wss.on('connection', (ws) => {
   const cleanUp = () => {
     if (currentRoomId && rooms.has(currentRoomId)) {
       const room = rooms.get(currentRoomId);
-      for (const client of room) {
+      for (const client of room.peers) {
         if (client.ws === ws) {
-          room.delete(client);
-          console.log(`[LEAVE] ${client.userName} (${client.peerId}) left room: ${currentRoomId}. Remaining: ${room.size}`);
+          room.peers.delete(client);
+          console.log(`[LEAVE] ${client.userName} (${client.peerId}) left room: ${currentRoomId}. Remaining: ${room.peers.size}`);
           break;
         }
       }
 
-      if (room.size === 0) {
+      if (room.peers.size === 0) {
         rooms.delete(currentRoomId);
         console.log(`[ROOM CLOSED] Room ${currentRoomId} is now empty and removed.`);
       } else {
